@@ -1,0 +1,9 @@
+# Install PyTorch with CUDA BEFORE running pip install -r requirements.txt:
+# pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+stable-baselines3[extra]>=2.0.0
+gymnasium[mujoco]>=0.29.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+pandas>=2.0.0
+tensorboard>=2.13.0

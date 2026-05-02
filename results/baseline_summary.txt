@@ -1,0 +1,7 @@
+Random Baseline Summary — HalfCheetah-v5
+========================================
+    mean: -292.10
+     std: 78.02
+     min: -482.07
+     max: -123.30
+  median: -292.81
