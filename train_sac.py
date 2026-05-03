@@ -26,7 +26,10 @@ Outputs:
 """
 
 import argparse
+import csv
+import glob
 import os
+import re
 import time
 
 import numpy as np
@@ -69,9 +72,9 @@ CONFIG = {
     "net_arch":         [256, 256],      # hidden layer sizes for actor & critic
 
     # Callbacks
-    "eval_freq":        10_000,          # EvalCallback frequency (env steps)
-    "eval_episodes":    10,              # episodes per evaluation
-    "checkpoint_freq":  50_000,          # CheckpointCallback frequency
+    "eval_freq":        50_000,          # EvalCallback frequency (env steps)
+    "eval_episodes":    5,              # episodes per evaluation
+    "checkpoint_freq":  100_000,          # CheckpointCallback frequency
 
     # Paths
     "log_dir":          "logs",
@@ -82,12 +85,31 @@ CONFIG = {
 
 
 class RewardLoggerCallback(BaseCallback):
-    """Collects mean episodic returns from the Monitor wrapper for plotting."""
+    """Collects episodic returns and persists them to CSV every 10 episodes."""
 
-    def __init__(self, verbose: int = 0):
+    def __init__(self, csv_path: str, verbose: int = 0):
         super().__init__(verbose)
+        self.csv_path = csv_path
         self.episode_rewards: list[float] = []
         self.episode_timesteps: list[int] = []
+        self._n_written = 0
+
+        if os.path.exists(csv_path):
+            with open(csv_path, newline="") as f:
+                for row in csv.DictReader(f):
+                    self.episode_rewards.append(float(row["reward"]))
+                    self.episode_timesteps.append(int(row["timestep"]))
+            self._n_written = len(self.episode_rewards)
+
+    def _flush_csv(self) -> None:
+        needs_header = not os.path.exists(self.csv_path)
+        with open(self.csv_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            if needs_header:
+                writer.writerow(["timestep", "reward"])
+            for i in range(self._n_written, len(self.episode_rewards)):
+                writer.writerow([self.episode_timesteps[i], self.episode_rewards[i]])
+        self._n_written = len(self.episode_rewards)
 
     def _on_step(self) -> bool:
         for info in self.locals.get("infos", []):
@@ -95,7 +117,21 @@ class RewardLoggerCallback(BaseCallback):
             if ep_info:
                 self.episode_rewards.append(ep_info["r"])
                 self.episode_timesteps.append(self.num_timesteps)
+        n = len(self.episode_rewards)
+        if n % 10 == 0 and n > self._n_written:
+            self._flush_csv()
         return True
+
+
+def find_latest_checkpoint(ckpt_dir: str) -> str | None:
+    """Return the sac_ckpt_*_steps.zip with the highest step count, or None."""
+    matches = glob.glob(os.path.join(ckpt_dir, "sac_ckpt_*_steps.zip"))
+    if not matches:
+        return None
+    def _steps(path: str) -> int:
+        m = re.search(r"sac_ckpt_(\d+)_steps\.zip$", path)
+        return int(m.group(1)) if m else -1
+    return max(matches, key=_steps)
 
 
 def make_env(env_id: str, seed: int, rank: int = 0) -> gym.Env:
@@ -116,6 +152,7 @@ def build_callbacks(cfg: dict, run_name: str) -> tuple[CallbackList, RewardLogge
         save_freq=cfg["checkpoint_freq"],
         save_path=checkpoint_path,
         name_prefix="sac_ckpt",
+        save_replay_buffer=True,
         verbose=1,
     )
 
@@ -130,7 +167,8 @@ def build_callbacks(cfg: dict, run_name: str) -> tuple[CallbackList, RewardLogge
         verbose=1,
     )
 
-    reward_logger = RewardLoggerCallback()
+    csv_path = os.path.join(cfg["results_dir"], f"reward_log_{run_name}.csv")
+    reward_logger = RewardLoggerCallback(csv_path)
 
     return CallbackList([checkpoint_cb, eval_cb, reward_logger]), reward_logger, eval_env
 
@@ -203,12 +241,20 @@ def save_training_summary(
     print(f"  All-time max return : {np.max(rewards):.2f}")
 
 
-def train(cfg: dict, run_name: str) -> None:
+def train(cfg: dict, run_name: str, checkpoint: str | None = None) -> None:
     os.makedirs(cfg["log_dir"], exist_ok=True)
     os.makedirs(cfg["checkpoint_dir"], exist_ok=True)
     os.makedirs(cfg["results_dir"], exist_ok=True)
 
-    tb_log = os.path.join(cfg["log_dir"], f"sac_halfcheetah_{run_name}")
+    tb_log = cfg["log_dir"]
+    tb_log_name = f"SAC_{run_name}"
+
+    # Auto-resume: find the latest checkpoint saved for this run
+    ckpt_dir = os.path.join(cfg["checkpoint_dir"], f"sac_{run_name}")
+    if checkpoint is None:
+        checkpoint = find_latest_checkpoint(ckpt_dir)
+        if checkpoint is not None:
+            print(f"  Found checkpoint — auto-resuming from: {checkpoint}")
 
     print("=" * 55)
     print("  SAC Training — HalfCheetah-v5")
@@ -216,33 +262,42 @@ def train(cfg: dict, run_name: str) -> None:
     print(f"  Run name        : {run_name}")
     print(f"  Total timesteps : {cfg['total_timesteps']:,}")
     print(f"  Seed            : {cfg['seed']}")
-    print(f"  TensorBoard dir : {tb_log}")
+    print(f"  TensorBoard dir : {os.path.join(tb_log, tb_log_name + '_1')}")
     print("-" * 55)
 
     env = make_env(cfg["env_id"], cfg["seed"])
 
-    policy_kwargs = {"net_arch": cfg["net_arch"]}
-
-    model = SAC(
-        policy=cfg["policy"],
-        env=env,
-        learning_rate=cfg["learning_rate"],
-        buffer_size=cfg["buffer_size"],
-        learning_starts=cfg["learning_starts"],
-        batch_size=cfg["batch_size"],
-        tau=cfg["tau"],
-        gamma=cfg["gamma"],
-        train_freq=cfg["train_freq"],
-        gradient_steps=cfg["gradient_steps"],
-        ent_coef=cfg["ent_coef"],
-        target_entropy=cfg["target_entropy"],
-        use_sde=cfg["use_sde"],
-        policy_kwargs=policy_kwargs,
-        tensorboard_log=tb_log,
-        seed=cfg["seed"],
-        verbose=1,
-        device="auto",  # uses CUDA if available
-    )
+    if checkpoint is not None:
+        model = SAC.load(checkpoint, env=env, tensorboard_log=tb_log, device="auto")
+        steps = re.search(r"sac_ckpt_(\d+)_steps\.zip$", checkpoint)
+        if steps:
+            rb_path = checkpoint.replace(f"sac_ckpt_{steps.group(1)}_steps.zip",
+                                         f"sac_ckpt_{steps.group(1)}_steps_replay_buffer.pkl")
+            if os.path.exists(rb_path):
+                print(f"  Loading replay buffer: {rb_path}")
+                model.load_replay_buffer(rb_path)
+    else:
+        policy_kwargs = {"net_arch": cfg["net_arch"]}
+        model = SAC(
+            policy=cfg["policy"],
+            env=env,
+            learning_rate=cfg["learning_rate"],
+            buffer_size=cfg["buffer_size"],
+            learning_starts=cfg["learning_starts"],
+            batch_size=cfg["batch_size"],
+            tau=cfg["tau"],
+            gamma=cfg["gamma"],
+            train_freq=cfg["train_freq"],
+            gradient_steps=cfg["gradient_steps"],
+            ent_coef=cfg["ent_coef"],
+            target_entropy=cfg["target_entropy"],
+            use_sde=cfg["use_sde"],
+            policy_kwargs=policy_kwargs,
+            tensorboard_log=tb_log,
+            seed=cfg["seed"],
+            verbose=1,
+            device="auto",  # uses CUDA if available
+        )
 
     callbacks, reward_logger, eval_env = build_callbacks(cfg, run_name)
 
@@ -251,8 +306,8 @@ def train(cfg: dict, run_name: str) -> None:
         total_timesteps=cfg["total_timesteps"],
         callback=callbacks,
         progress_bar=True,
-        reset_num_timesteps=True,
-        tb_log_name="SAC",
+        reset_num_timesteps=checkpoint is None,
+        tb_log_name=tb_log_name,
     )
     elapsed = time.time() - t0
 
@@ -293,6 +348,8 @@ def parse_args() -> argparse.Namespace:
                         help="Override batch size")
     parser.add_argument("--gamma", type=float, default=None,
                         help="Override discount factor")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to a .zip checkpoint to resume training from")
     return parser.parse_args()
 
 
@@ -312,4 +369,4 @@ if __name__ == "__main__":
         cfg["gamma"] = args.gamma
 
     run_name = args.name if args.name else f"seed{cfg['seed']}"
-    train(cfg, run_name)
+    train(cfg, run_name, checkpoint=args.checkpoint)

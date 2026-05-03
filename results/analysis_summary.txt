@@ -1,0 +1,21 @@
+==================================================
+  Phase 4 Analysis Summary — HalfCheetah-v5
+==================================================
+
+[Random baseline]
+  Mean return        :    -292.10
+  Std return         :      78.02
+  Min return         :    -603.49
+  Max return         :     -91.36
+
+[SAC trained]
+  Final-100 mean     :   12558.03
+  Final-100 std      :     964.02
+  Max episode return :   12990.61
+  Best eval mean     :   13164.53
+  Best eval std      :      37.23
+
+[Improvement over random]
+  Absolute           :  +12850.13
+  Relative           :   +4399.2%
+==================================================

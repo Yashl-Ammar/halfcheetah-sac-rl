@@ -85,3 +85,9 @@ python evaluate.py
 ## Hardware
 - GPU: NVIDIA GeForce RTX 3070
 - Framework: PyTorch + Stable-Baselines3
+
+## Known issues
+SB3 checkpoint loading requires a patch for PyTorch 2.5+.
+If resuming breaks after reinstalling SB3, apply the fix:
+- File: venv/Lib/site-packages/stable_baselines3/common/save_util.py line 442
+- Wrap the zip entry: th.load(io.BytesIO(param_file.read()), ...)

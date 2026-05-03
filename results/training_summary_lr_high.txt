@@ -1,0 +1,35 @@
+SAC Training Summary — HalfCheetah-v5
+Run: lr_high
+=============================================
+
+[Hyperparameters]
+  env_id              : HalfCheetah-v5
+  seed                : 42
+  total_timesteps     : 500000
+  learning_rate       : 0.001
+  buffer_size         : 1000000
+  learning_starts     : 10000
+  batch_size          : 256
+  tau                 : 0.005
+  gamma               : 0.99
+  train_freq          : 1
+  gradient_steps      : 1
+  ent_coef            : auto
+  target_entropy      : auto
+  use_sde             : False
+  policy              : MlpPolicy
+  net_arch            : [256, 256]
+  eval_freq           : 50000
+  eval_episodes       : 5
+  checkpoint_freq     : 100000
+  log_dir             : logs
+  checkpoint_dir      : checkpoints
+  results_dir         : results
+
+[Training results]
+  Total episodes      : 500
+  Total wall time (s) : 5671.8
+  Final-100 mean      : 9898.41
+  Final-100 std       : 264.57
+  Final-100 max       : 10451.56
+  All-time max        : 10451.56
